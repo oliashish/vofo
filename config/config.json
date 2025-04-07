@@ -1,0 +1,7 @@
+{
+  "cpu": 85.0,
+  "ram": 85.0,
+  "disk": 85.0,
+  "log_file": ".",
+  "interval": 5
+}
