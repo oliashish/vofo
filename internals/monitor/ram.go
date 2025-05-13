@@ -1,3 +1,0 @@
-package monitor
-
-func RAM() {}

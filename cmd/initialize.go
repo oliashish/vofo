@@ -4,42 +4,44 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
-	"github.com/oliashish/vofo/config"
+	"github.com/oliashish/vofo/internals/config"
 )
 
-func InitializeVofo(path string) {
-	configFile, err := os.ReadFile(path)
+// InitializeVofo initializes the project with the given config path.
+func InitVofo(configPath string) error {
+	log.Info(fmt.Sprintf("Initializing project with config: %s", configPath))
 
+	// Read config file
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Error(fmt.Sprintf("Error while executing Project: %s\n", err))
-		os.Exit(1)
+		log.Error(fmt.Sprintf("Failed to read config file: %s", err))
+		return fmt.Errorf("cannot read config: %w", err)
 	}
 
-	var userConfig config.Config
-	parseErr := json.Unmarshal(configFile, &userConfig)
-	if err != nil {
-		log.Error(fmt.Sprintf("Unable to parse your configs from JSON file at : %s ERROR:  %s\n", configFile, parseErr))
-		os.Exit(1)
+	// Parse config
+	var cfg config.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Error(fmt.Sprintf("Failed to parse cfg JSON: %s", err))
+		return fmt.Errorf("invalid cfg format: %w", err)
 	}
 
-	log.Info("Please check your config settings for the machine and confirm")
-	log.Info("Only [YES] is allowed: ")
-
-	var userIn string
-	fmt.Scan(&userIn)
-
-	if err != nil {
-		log.Error(fmt.Sprintf("Only [YES] is allowed: %s\n", err))
-		os.Exit(1)
+	// Validate cfg
+	if cfg.CPUThreshold <= 0 || cfg.CPUThreshold > 100 {
+		log.Error("Invalid CPU threshold: must be between 0 and 100")
+		return fmt.Errorf("invalid CPU threshold: %.2f", cfg.CPUThreshold)
+	}
+	if cfg.RAMThreshold <= 0 || cfg.RAMThreshold > 100 {
+		log.Error("Invalid RAM threshold: must be between 0 and 100")
+		return fmt.Errorf("invalid RAM threshold: %.2f", cfg.RAMThreshold)
+	}
+	if cfg.DiskThreshold <= 0 || cfg.DiskThreshold > 100 {
+		log.Error("Invalid Disk threshold: must be between 0 and 100")
+		return fmt.Errorf("invalid Disk threshold: %.2f", cfg.DiskThreshold)
 	}
 
-	if strings.ToLower(userIn) != "yes" {
-		log.Error("Only [YES] is allowed. Exiting...")
-		os.Exit(1)
-	}
+	config.SetConfig(&cfg)
 
-	log.Info("initializing your machine....")
-
+	log.Info("Configuration loaded successfully")
+	return nil
 }

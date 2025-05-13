@@ -2,101 +2,87 @@ package cmd
 
 import (
 	"fmt"
-	"os"
+	"strings"
 
+	"github.com/oliashish/vofo/internals/config"
 	"github.com/oliashish/vofo/internals/monitor"
-	"github.com/oliashish/vofo/logger"
-	"github.com/spf13/cobra"
 )
 
-var log = logger.Logger()
-
-type State string
-
-const (
-	All     State = "All"
-	Monitor State = "Monitor"
-	Heal    State = "Heal"
-)
-
-var rootCmd = &cobra.Command{
-	Use:   "vofo",
-	Short: "A lightweight, cloud agnostic monitoring and auto-healing tool",
-	Long:  `A lightweight, cloud agnostic monitoring and auto-healing tool`,
-	Run: func(cmd *cobra.Command, args []string) {
-
-	},
-}
-
-var initialize = &cobra.Command{
-	Use:     "initialize",
-	Short:   "Initlize project with a path to config file",
-	Aliases: []string{"init"},
-	Example: "vofo init path/to/config.json",
-	Args:    cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		InitializeVofo(args[0])
-	},
-}
-
-var start = &cobra.Command{
-	Use:     "start",
-	Short:   "Start agent with configurable args",
-	Aliases: []string{"s"},
-	Example: `vofo start <defaults to monitor>
-To use all modules please use <vofo start -A>`,
-	Run: func(cmd *cobra.Command, args []string) {
-		switch {
-		case allFlag:
-			startAgent(All)
-
-		case monitFlag:
-			startAgent(Monitor)
-
-		case healFlag:
-			startAgent(Heal)
-
-		default:
-			startAgent(Monitor)
-		}
-	},
-}
-
-var allFlag bool
-var monitFlag bool
-var healFlag bool
-
-func Init() {
-	rootCmd.AddCommand(initialize)
-
-	rootCmd.AddCommand(start)
-
-	start.Flags().BoolVarP(&allFlag, "all", "A", false, "Start all modules!!!")
-	start.Flags().BoolVarP(&monitFlag, "monitor", "M", false, "Start monitor module!!!")
-	start.Flags().BoolVarP(&healFlag, "heal", "H", false, "Start heal modules!!!")
-
-}
-
-func Execute() {
-	logger := logger.Logger()
-	if err := rootCmd.Execute(); err != nil {
-		logger.Error(fmt.Sprintf("Error while executing Project: %s\n", err))
-		os.Exit(1)
-	}
-}
-
-func startAgent(s State) {
-	logger := logger.Logger()
-	switch s {
+// startAgent starts the agent based on the specified state.
+func startAgent(state State) error {
+	switch state {
 	case All:
-		logger.Info("Start All Agent")
-		monitor.CPU()
+		return monitor.All()
 	case Monitor:
-		logger.Info("Start Monitoring Agent")
-		monitor.CPU()
+		return monitor.All()
 	case Heal:
-		logger.Info("Start Healing Agent")
+		return monitor.Heal()
 	default:
-		logger.Info("Default, running monitoring agent")
+		log.Info("Defaulting to monitoring module")
+		return monitor.All()
 	}
+}
+
+// startMonitor starts monitoring the specified resources.
+func startMonitor(resources []Resource) error {
+	cfg := config.GetConfig()
+	if cfg == nil {
+		log.Error("No config loaded; run 'vofo init' first")
+		return fmt.Errorf("configuration not initialized")
+	}
+	log.Info(fmt.Sprintf("Using thresholds: CPU=%.2f, RAM=%.2f, Disk=%.2f",
+		cfg.CPUThreshold, cfg.RAMThreshold, cfg.DiskThreshold))
+
+	if len(resources) == 0 {
+		return monitor.All()
+	}
+
+	for _, r := range resources {
+		switch r {
+		case CPU:
+			if err := monitor.CPU(); err != nil {
+				log.Error(fmt.Sprintf("Failed to monitor CPU: %s", err))
+				return err
+			}
+		case Disk:
+			if err := monitor.Disk(); err != nil {
+				log.Error(fmt.Sprintf("Failed to monitor Disk: %s", err))
+				return err
+			}
+		case Mem:
+			if err := monitor.Mem(); err != nil {
+				log.Error(fmt.Sprintf("Failed to monitor Memory: %s", err))
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// parseResources validates and parses resource arguments.
+func parseResources(args []string, allFlag bool) ([]Resource, error) {
+	if allFlag {
+		return []Resource{CPU, Disk, Mem}, nil
+	}
+
+	if len(args) == 0 {
+		return nil, nil // Empty resources will monitor all
+	}
+
+	resources := make([]Resource, 0, len(args))
+	validResources := map[string]Resource{
+		"cpu":  CPU,
+		"disk": Disk,
+		"mem":  Mem,
+	}
+
+	for _, arg := range args {
+		r, ok := validResources[strings.ToLower(arg)]
+		if !ok {
+			return nil, fmt.Errorf("invalid resource: %s (valid: cpu, disk, mem)", arg)
+		}
+		resources = append(resources, r)
+	}
+
+	return resources, nil
 }
