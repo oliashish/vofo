@@ -2,106 +2,94 @@ package monitor
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
+	"time"
 
+	"github.com/oliashish/vofo/internals/config"
 	"github.com/oliashish/vofo/logger"
-	"github.com/tklauser/go-sysconf"
+	"github.com/shirou/gopsutil/cpu"
 )
 
-var log = logger.Logger()
-
-// TODO: Match the type below to actual types, not all string
-type Proc struct {
-	pid       string
-	process   string
-	uptime    int
-	stime     int
-	starttime int
-}
-
-type CpuUsage struct {
-	pid     string
-	process string
-	usage   float64
-}
-
-var jiffies = sysconf.SC_CLK_TCK
-
-func getSystemUptime() float64 {
-	data, _ := os.ReadFile("/proc/uptime")
-	uptimeStr := strings.Fields(string(data))[0]
-	uptime, _ := strconv.ParseFloat(uptimeStr, 64)
-	return uptime
-}
-
-func parseProcDir(procDir []os.DirEntry) []Proc {
-	processes := []Proc{}
-
-	for _, p := range procDir {
-
-		info, _ := p.Info()
-
-		path := filepath.Join("/proc", info.Name(), "stat")
-
-		procStat, err := os.ReadFile(path)
-		if err != nil {
-			fmt.Println("Unable to read stat file: ", err)
-			continue
-		}
-
-		// TODO: Handle process name as it is enclosed in paranthesis ()
-		// and it can have space in this which can break this " " delimiter
-		stat := strings.Split(string(procStat), " ")
-		proc := Proc{
-			pid:     stat[0],
-			process: stat[1],
-			// TODO: Better handle this conversion in it's own function which handles error and returns only int
-			uptime:    func() int { i, _ := strconv.Atoi(stat[13]); return i }(),
-			stime:     func() int { i, _ := strconv.Atoi(stat[14]); return i }(),
-			starttime: func() int { i, _ := strconv.Atoi(stat[21]); return i }(),
-		}
-
-		processes = append(processes, proc)
-
-	}
-	return processes
-}
-
-func getCpuUsage(processes []Proc) []CpuUsage {
-	sysUptime := getSystemUptime()
-
-	usage := []CpuUsage{}
-
-	for _, process := range processes {
-		totalTime := float64(process.uptime + process.stime)
-		seconds := sysUptime - (float64(process.starttime) / float64(jiffies))
-
-		if seconds <= 0 {
-			continue
-		}
-
-		cpuUsage := 100 * ((totalTime / float64(jiffies)) / seconds)
-		usage = append(usage, CpuUsage{
-			pid:     process.pid,
-			process: process.process,
-			usage:   cpuUsage,
-		})
-	}
-	return usage
-}
-
-func CPU() {
-	procDir, err := os.ReadDir("/proc")
+// CPU monitors CPU usage for all cores.
+func CPU() error {
+	log, err := logger.NewLogger()
 	if err != nil {
-		log.Error(fmt.Sprintf("Error while reading /proc Directory: %s\n", err))
+		return fmt.Errorf("failed to initialize logger: %w", err)
 	}
 
-	processes := parseProcDir(procDir)
-	cpuPercentage := getCpuUsage(processes)
+	cfg := config.GetConfig()
+	if cfg == nil {
+		log.Error("Configuration not initialized")
+		return fmt.Errorf("configuration not initialized")
+	}
 
-	fmt.Println(cpuPercentage)
+	log.Info("Starting CPU monitoring")
+	interval := time.Duration(cfg.Interval * float64(time.Second))
+	alertThreshold := time.Duration(cfg.AlertThreshold * float64(time.Second))
 
+	// Track duration of threshold breach
+	breachStart := time.Time{}
+	breachActive := false
+
+	for {
+		percentages, err := cpu.Percent(interval, true) // true = per-core
+		if err != nil {
+			log.Error(fmt.Sprintf("Failed to get CPU usage: %s", err))
+			return fmt.Errorf("cpu usage: %w", err)
+		}
+
+		// Calculate average usage across all cores
+		var total float64
+		for i, perc := range percentages {
+			total += perc
+			log.Info(fmt.Sprintf("CPU Core %d: %.2f%%", i, perc))
+		}
+		avgUsage := total / float64(len(percentages))
+		log.Info(fmt.Sprintf("Average CPU Usage: %.2f%%", avgUsage))
+
+		// Check threshold
+		if avgUsage > cfg.CPUThreshold {
+			if !breachActive {
+				breachStart = time.Now()
+				breachActive = true
+			}
+			breachDuration := time.Since(breachStart)
+			log.Warn(fmt.Sprintf("CPU usage (%.2f%%) exceeds threshold (%.2f%%) for %.2f seconds",
+				avgUsage, cfg.CPUThreshold, breachDuration.Seconds()))
+
+			if breachDuration >= alertThreshold {
+				message := fmt.Sprintf("Alert: CPU usage (%.2f%%) exceeded threshold (%.2f%%) for %.2f seconds",
+					avgUsage, cfg.CPUThreshold, breachDuration.Seconds())
+				if err := sendAlert(message, cfg, log); err != nil {
+					log.Error(fmt.Sprintf("Failed to send alert: %s", err))
+				} else {
+					log.Info("CPU alert sent successfully")
+				}
+				// Reset breach to avoid repeated alerts
+				breachActive = false
+			}
+		} else {
+			if breachActive {
+				log.Info("CPU usage returned to normal")
+				breachActive = false
+			}
+		}
+
+		// Sleep for the interval (already accounted for in cpu.Percent)
+	}
+}
+
+// sendAlert sends an alert based on the config's alert method (placeholder).
+func sendAlert(message string, cfg *config.Config, log *logger.Logger) error {
+	switch cfg.AlertMethod {
+	case "email":
+		// Placeholder: Implement email sending
+		log.Info(fmt.Sprintf("Sending email to %s: %s", cfg.EmailRecipient, message))
+		return nil
+	case "slack":
+		// Placeholder: Implement Slack webhook
+		log.Info(fmt.Sprintf("Sending Slack message to %s: %s", cfg.SlackWebhook, message))
+		return nil
+	default:
+		return fmt.Errorf("unsupported alert method: %s", cfg.AlertMethod)
+	}
 }
